@@ -21,8 +21,12 @@ async function bootstrap() {
   if (args.length === 0 || args[0] === 'ui' || args[0] === '--ui') {
     const { launchTUI } = await import('../src/ui/tui.js');
     await launchTUI();
+  } else if (args[0] === 'ai') {
+    // Módulo de IA com Ollama
+    const { runAICLI } = await import('../src/ai/aiCLI.js');
+    await runAICLI(args.slice(1));
   } else {
-    // Modo CLI direto
+    // Modo CLI direto (GET, POST, etc.)
     const { runCLI } = await import('../src/cli.js');
     await runCLI();
   }

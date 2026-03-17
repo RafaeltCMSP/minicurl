@@ -1,7 +1,7 @@
 {
   "name": "minicurl",
-  "version": "1.0.0",
-  "description": "🌐 MinicUrl - CLI poderosa para aprender e testar requisições HTTP/cURL",
+  "version": "1.1.0",
+  "description": "🌐 MinicUrl - CLI poderosa para testar HTTP, cURL e usar IA com Ollama",
   "main": "src/cli.js",
   "bin": {
     "minicurl": "./bin/minicurl.js"
@@ -13,6 +13,10 @@
   "scripts": {
     "start": "node bin/minicurl.js",
     "dev": "node bin/minicurl.js",
+    "ai": "node bin/minicurl.js ai",
+    "ai:config": "node bin/minicurl.js ai config",
+    "ai:models": "node bin/minicurl.js ai models",
+    "ai:status": "node bin/minicurl.js ai status",
     "prepare": "node -e \"require('fs').chmodSync('bin/minicurl.js', '755')\""
   },
   "files": [

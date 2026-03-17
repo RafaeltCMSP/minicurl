@@ -14,6 +14,7 @@ import { HistoryManager } from '../core/history.js';
 import { LearningModule } from '../learn/academy.js';
 import { TestRunner } from '../core/testRunner.js';
 import { displayResult } from './display.js';
+import { launchAIChat } from './aiChat.js';
 
 const engine = new RequestEngine();
 const history = new HistoryManager();
@@ -137,6 +138,10 @@ async function mainMenu() {
         {
           name: COLORS.primary('⚡ Nova Requisição') + COLORS.dim('     — GET, POST, PUT, PATCH, DELETE...'),
           value: 'request',
+        },
+        {
+          name: chalk.hex('#A855F7')('🤖 AI Assistant') + COLORS.dim('      — Chat com IA · Agentes Ollama'),
+          value: 'ai',
         },
         {
           name: COLORS.info('📚 cURL Academy') + COLORS.dim('       — Aprenda HTTP na prática'),
@@ -558,6 +563,9 @@ export async function launchTUI() {
       switch (action) {
         case 'request':
           await newRequestFlow();
+          break;
+        case 'ai':
+          await launchAIChat(COLORS);
           break;
         case 'learn':
           await academy.startInteractive(COLORS, inquirer, boxen);
