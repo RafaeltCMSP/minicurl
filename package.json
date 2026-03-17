@@ -1,0 +1,44 @@
+{
+  "name": "minicurl",
+  "version": "1.0.0",
+  "description": "🌐 MinicUrl - CLI poderosa para aprender e testar requisições HTTP/cURL",
+  "main": "src/cli.js",
+  "bin": {
+    "minicurl": "./bin/minicurl.js"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node bin/minicurl.js",
+    "dev": "node bin/minicurl.js",
+    "prepare": "node -e \"require('fs').chmodSync('bin/minicurl.js', '755')\""
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "examples/",
+    "README.md"
+  ],
+  "keywords": [
+    "curl",
+    "http",
+    "cli",
+    "api",
+    "testing",
+    "learning",
+    "rest",
+    "terminal"
+  ],
+  "author": "MinicUrl",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RafaeltCMSP/minicurl.git"
+  },
+  "homepage": "https://github.com/RafaeltCMSP/minicurl#readme",
+  "bugs": {
+    "url": "https://github.com/RafaeltCMSP/minicurl/issues"
+  },
+  "depend

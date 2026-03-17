@@ -1,0 +1,61 @@
+{
+  "name": "Suite de Exemplo - JSONPlaceholder API",
+  "description": "Testes básicos usando a API pública jsonplaceholder.typicode.com",
+  "tests": [
+    {
+      "name": "GET /posts retorna lista de posts",
+      "method": "GET",
+      "url": "https://jsonplaceholder.typicode.com/posts",
+      "assertions": [
+        { "type": "status", "expected": 200 },
+        { "type": "response_time", "expected": 3000 },
+        { "type": "header_exists", "expected": "content-type" }
+      ]
+    },
+    {
+      "name": "GET /posts/1 retorna um post específico",
+      "method": "GET",
+      "url": "https://jsonplaceholder.typicode.com/posts/1",
+      "assertions": [
+        { "type": "status", "expected": 200 },
+        { "type": "json_path", "path": "id", "operator": "equals", "expected": 1 },
+        { "type": "json_path", "path": "title", "operator": "exists" }
+      ]
+    },
+    {
+      "name": "POST /posts cria novo post",
+      "method": "POST",
+      "url": "https://jsonplaceholder.typicode.com/posts",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "title": "MinicUrl Test Post",
+        "body": "Testando criação via MinicUrl",
+        "userId": 1
+      },
+      "assertions": [
+        { "type": "status", "expected": 201 },
+        { "type": "body_contains", "expected": "MinicUrl" },
+        { "type": "json_path", "path": "id", "operator": "exists" }
+      ]
+    },
+    {
+      "name": "GET /users/999 retorna 404",
+      "method": "GET",
+      "url": "https://jsonplaceholder.typicode.com/users/999",
+      "assertions": [
+        { "type": "status", "expected": 404 }
+      ]
+    },
+    {
+      "name": "GET /todos com filtro de query",
+      "method": "GET",
+      "url": "https://jsonplaceholder.typicode.com/todos?completed=true&_limit=5",
+      "assertions": [
+        { "type": "status", "expected": 200 },
+        { "type": "response_time", "expected": 3000 }
+      ]
+    }
+  ]
+}
