@@ -5,12 +5,13 @@
  */
 
 export const INTENTS = {
-  REQUEST: 'request',       // Gerar/executar requisições HTTP
-  TEST: 'test',             // Criar/executar suites de teste
-  EXPLAIN: 'explain',       // Explicar resposta HTTP ou conceito
-  DEBUG: 'debug',           // Analisar erros e sugerir correções
-  CONFIG: 'config',         // Configurar a ferramenta
-  GENERAL: 'general',       // Conversa geral / dúvidas
+  REQUEST: 'request',
+  TEST: 'test',
+  EXPLAIN: 'explain',
+  DEBUG: 'debug',
+  CONFIG: 'config',
+  GENERAL: 'general',
+  ANALYZE_CODE: 'analyze_code',
 };
 
 export class AgentBus {

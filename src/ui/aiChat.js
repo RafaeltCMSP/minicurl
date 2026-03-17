@@ -1,499 +1,522 @@
 /**
- * MinicUrl AI — Interface de Chat no Terminal
- * Chat interativo com streaming de tokens, comandos especiais e gestão de sessão.
+ * MinicUrl AI — Interface de Chat Cline-style
+ * Layout centralizado, status bar, streaming, memória integrada.
  */
 
 import chalk from 'chalk';
 import inquirer from 'inquirer';
-import boxen from 'boxen';
 import { setTimeout as sleep } from 'timers/promises';
 import { orchestrator } from '../ai/agents/orchestrator.js';
 import { configManager } from '../ai/config.js';
-import { RequestAgent } from '../ai/agents/requestAgent.js';
+import { memoryManager } from '../ai/memory.js';
+import { CodeAnalyzerAgent } from '../ai/agents/codeAnalyzerAgent.js';
+import {
+  THEME, renderMarkdown, printAssistantMessage, printUserMessage,
+  printAIHeader, printStatusBar, createSpinner, termWidth, separator, center, infoBox,
+} from './renderer.js';
 import { displayResult } from './display.js';
 
 // ─────────────────────────────────────────────
-//  PALETA DE CORES — AI Theme (cyberpunk-purple)
+//  ESTADO DA SESSÃO
 // ─────────────────────────────────────────────
-const AI = {
-  primary: chalk.hex('#A855F7'),     // violeta
-  secondary: chalk.hex('#EC4899'),   // pink
-  accent: chalk.hex('#06B6D4'),      // ciano
-  user: chalk.hex('#00FFB2'),        // verde neon (usuário)
-  ai: chalk.hex('#C084FC'),          // lilás (IA)
-  dim: chalk.hex('#4A4A6A'),
-  success: chalk.hex('#39FF14'),
-  error: chalk.hex('#FF3131'),
-  warning: chalk.hex('#FFD700'),
-  muted: chalk.gray,
-  white: chalk.white,
-  bold: chalk.bold,
+const session = {
+  requests: 0,
+  testsGenerated: 0,
+  messageCount: 0,
+  startTime: Date.now(),
 };
-
-// ─────────────────────────────────────────────
-//  BADGES DE AGENTES
-// ─────────────────────────────────────────────
-const AGENT_BADGES = {
-  'orchestrator': AI.primary('🧠 Orquestrador'),
-  'request-agent': AI.accent('⚡ Agente de Requisições'),
-  'test-agent': AI.warning('🧪 Agente de Testes'),
-  'explain-agent': AI.secondary('📚 Agente Explicador'),
-  'debug-agent': AI.error('🔍 Agente Debugger'),
-  'config-agent': AI.dim('⚙️  Config'),
-  'error-handler': AI.error('⚠️  Error'),
-};
-
-// ─────────────────────────────────────────────
-//  COMANDOS ESPECIAIS DO CHAT
-// ─────────────────────────────────────────────
-const SPECIAL_COMMANDS = {
-  '/help': showChatHelp,
-  '/clear': clearSession,
-  '/config': showConfig,
-  '/models': listModels,
-  '/status': checkStatus,
-  '/history': showAgentLog,
-  '/sair': null,   // tratado por loop
-  '/exit': null,
-};
-
-// ─────────────────────────────────────────────
-//  SPLASH DA IA
-// ─────────────────────────────────────────────
-async function showAISplash(cfg, ollamaStatus) {
-  console.log('\n');
-
-  const lines = [
-    AI.primary('  ╔══════════════════════════════════════════╗'),
-    AI.primary('  ║') + AI.bold('         🤖  MinicUrl AI Assistant         ') + AI.primary('║'),
-    AI.primary('  ║') + AI.dim('    Powered by Ollama · Sistema de Agentes  ') + AI.primary('║'),
-    AI.primary('  ╚══════════════════════════════════════════╝'),
-  ];
-
-  for (const line of lines) {
-    console.log(line);
-    await sleep(60);
-  }
-
-  console.log();
-
-  // Status do Ollama
-  const statusStr = ollamaStatus.online
-    ? AI.success(`● Online`) + AI.muted(` — ${ollamaStatus.models?.length || 0} modelo(s) disponíve${ollamaStatus.models?.length === 1 ? 'l' : 'is'}`)
-    : AI.error(`● Offline`) + AI.warning(` — Execute: ollama serve`);
-
-  const modelStr = AI.accent(`🤖 ${cfg.model}`);
-
-  const infoLines = [
-    `  ${AI.dim('Modelo:')}      ${modelStr}`,
-    `  ${AI.dim('Ollama:')}      ${statusStr}`,
-    `  ${AI.dim('URL:')}         ${AI.muted(cfg.ollamaUrl)}`,
-    `  ${AI.dim('Streaming:')}   ${cfg.streaming ? AI.success('ativo') : AI.muted('inativo')}`,
-    '',
-    `  ${AI.dim('Comandos:')} ${AI.primary('/help')} ${AI.dim('·')} ${AI.primary('/config')} ${AI.dim('·')} ${AI.primary('/models')} ${AI.dim('·')} ${AI.primary('/clear')} ${AI.dim('·')} ${AI.primary('/sair')}`,
-  ];
-
-  const box = boxen(infoLines.join('\n'), {
-    padding: { top: 0, bottom: 0, left: 1, right: 1 },
-    margin: { left: 2 },
-    borderStyle: 'round',
-    borderColor: '#A855F7',
-  });
-
-  console.log(box);
-  console.log();
-
-  if (!ollamaStatus.online) {
-    console.log(AI.warning('  ⚠️  Ollama não detectado. O chat ficará em modo limitado.'));
-    console.log(AI.dim('  Instale e inicie: https://ollama.ai → ollama serve\n'));
-  }
-}
-
-// ─────────────────────────────────────────────
-//  RENDER — mensagens no terminal
-// ─────────────────────────────────────────────
-function printSeparator() {
-  console.log(AI.dim('  ' + '─'.repeat(54)));
-}
-
-function printUserMessage(text) {
-  console.log('\n' + AI.dim('  ┌── ') + AI.user('Você'));
-  const lines = text.split('\n');
-  for (const line of lines) {
-    console.log(AI.dim('  │ ') + AI.white(line));
-  }
-  console.log(AI.dim('  └─────'));
-}
-
-function printAgentHeader(agentUsed) {
-  const badge = AGENT_BADGES[agentUsed] || AI.primary(`🤖 ${agentUsed}`);
-  console.log('\n' + AI.dim('  ┌── ') + badge);
-  console.log(AI.dim('  │'));
-}
-
-function printAgentToken(token) {
-  // Streaming: escrevemos token a token sem quebra de linha
-  process.stdout.write(AI.ai(token));
-}
-
-function printAgentEnd() {
-  console.log('\n' + AI.dim('  └─────'));
-}
-
-function printStats(stats) {
-  if (!stats || !stats.responseTokens) return;
-  const parts = [];
-  if (stats.responseTokens) parts.push(`${stats.responseTokens} tokens`);
-  if (stats.durationMs) parts.push(`${stats.durationMs}ms`);
-  if (stats.model) parts.push(stats.model);
-  console.log(AI.dim(`  · ${parts.join(' · ')}`));
-}
-
-// ─────────────────────────────────────────────
-//  SPINNER
-// ─────────────────────────────────────────────
-function createAISpinner(text = 'Pensando...') {
-  const frames = ['◐', '◓', '◑', '◒'];
-  let i = 0;
-  let timer;
-  return {
-    start() {
-      process.stdout.write('\n');
-      timer = setInterval(() => {
-        process.stdout.write(`\r  ${AI.primary(frames[i % frames.length])} ${AI.dim(text)}`);
-        i++;
-      }, 100);
-    },
-    stop() {
-      clearInterval(timer);
-      process.stdout.write('\r' + ' '.repeat(60) + '\r');
-    },
-  };
-}
 
 // ─────────────────────────────────────────────
 //  COMANDOS ESPECIAIS
 // ─────────────────────────────────────────────
-async function showChatHelp() {
-  const box = boxen(
-    [
-      AI.primary('Comandos disponíveis no chat:'),
+async function handleSpecialCommand(input, cfg) {
+  const parts = input.trim().split(/\s+/);
+  const cmd = parts[0].toLowerCase();
+
+  // ── /help ─────────────────────────────────
+  if (cmd === '/help') {
+    const w = Math.min(termWidth() - 4, 72);
+    console.log('\n' + infoBox([
+      THEME.primary('Comandos disponíveis:'),
       '',
-      `  ${AI.accent('/help')}            ${AI.muted('— Esta ajuda')}`,
-      `  ${AI.accent('/config')}          ${AI.muted('— Ver/editar configuração')}`,
-      `  ${AI.accent('/config url <url>')}${AI.muted(' — Trocar URL do Ollama')}`,
-      `  ${AI.accent('/config model <m>')}${AI.muted(' — Trocar modelo')}`,
-      `  ${AI.accent('/config key <k>')}  ${AI.muted('— Definir API key')}`,
-      `  ${AI.accent('/models')}          ${AI.muted('— Listar modelos locais')}`,
-      `  ${AI.accent('/status')}          ${AI.muted('— Status do Ollama')}`,
-      `  ${AI.accent('/history')}         ${AI.muted('— Log de agentes ativados')}`,
-      `  ${AI.accent('/clear')}           ${AI.muted('— Limpar histórico da sessão')}`,
-      `  ${AI.accent('/sair')}            ${AI.muted('— Voltar ao menu principal')}`,
+      `  ${THEME.accent('/help')}                    Mostra este painel`,
+      `  ${THEME.accent('/config')}                  Ver configuração atual`,
+      `  ${THEME.accent('/config url <url>')}         Trocar URL do Ollama`,
+      `  ${THEME.accent('/config model <m>')}         Trocar modelo`,
+      `  ${THEME.accent('/config key <k>')}            Definir API key`,
+      `  ${THEME.accent('/config streaming on|off')}   Ativar/desativar streaming`,
+      `  ${THEME.accent('/models')}                  Listar modelos instalados`,
+      `  ${THEME.accent('/status')}                  Status do Ollama`,
+      `  ${THEME.accent('/analyze <pasta>')}          Analisar código de um projeto`,
+      `  ${THEME.accent('/memory')}                  Ver resumo da memória`,
+      `  ${THEME.accent('/memory clear')}             Limpar memória persistente`,
+      `  ${THEME.accent('/history')}                 Log de agentes ativados`,
+      `  ${THEME.accent('/clear')}                   Limpar histórico da sessão`,
+      `  ${THEME.accent('/sair')}                    Voltar ao menu principal`,
       '',
-      AI.dim('Dicas de uso:'),
-      `  ${AI.muted('"Crie um POST para https://api.com/users com JSON"')}`,
-      `  ${AI.muted('"Gere uma suite de testes para esta API"')}`,
-      `  ${AI.muted('"Explique o erro 401 que acabei de ver"')}`,
-      `  ${AI.muted('"Por que minha requisição falhou?"')}`,
-    ].join('\n'),
-    {
-      padding: { top: 0, bottom: 0, left: 1, right: 1 },
-      margin: { left: 2 },
-      borderStyle: 'round',
-      borderColor: '#06B6D4',
+      THEME.dim('Dicas:'),
+      `  ${THEME.muted('"Faça um POST para https://api.com com body {name: test}"')}`,
+      `  ${THEME.muted('"Gere testes para esta API REST"')}`,
+      `  ${THEME.muted('"Por que recebi 401?"')}`,
+      `  ${THEME.muted('"Explique o resultado da última requisição"')}`,
+    ], { width: w }));
+    console.log('');
+    return true;
+  }
+
+  // ── /config ───────────────────────────────
+  if (cmd === '/config') {
+    const sub = parts[1];
+    if (!sub || sub === 'show') {
+      const c = await configManager.get();
+      console.log('\n' + infoBox([
+        THEME.primary('⚙️  Configuração atual:'),
+        '',
+        `  ${THEME.dim('URL Ollama:')}   ${THEME.accent(c.ollamaUrl)}`,
+        `  ${THEME.dim('Modelo:')}       ${THEME.accent(c.model)}`,
+        `  ${THEME.dim('API Key:')}      ${c.apiKey ? THEME.muted('***' + c.apiKey.slice(-4)) : THEME.dim('(não definida)')}`,
+        `  ${THEME.dim('Streaming:')}    ${c.streaming ? THEME.success('ativo') : THEME.muted('inativo')}`,
+        `  ${THEME.dim('Temperatura:')} ${THEME.muted(String(c.temperature))}`,
+        `  ${THEME.dim('Arquivo:')}      ${THEME.dim(configManager.getConfigPath())}`,
+      ]));
+      console.log('');
+      return true;
     }
-  );
-  console.log('\n' + box);
-}
 
-async function clearSession() {
-  orchestrator.clearSession();
-  console.log(AI.success('\n  ✓ Histórico da sessão limpo.\n'));
-}
+    const keyMap = { url: 'ollamaUrl', model: 'model', key: 'apiKey', streaming: 'streaming', temp: 'temperature' };
+    const configKey = keyMap[sub];
+    if (configKey) {
+      let value = parts.slice(2).join(' ');
+      if (sub === 'streaming') value = (value === 'on' || value === 'true');
+      if (sub === 'temp') value = parseFloat(value) || 0.7;
+      await configManager.set({ [configKey]: value });
+      console.log(THEME.success(`\n  ✓ ${sub} → ${value}\n`));
+    } else {
+      console.log(THEME.warning(`  ⚠ Use: /config url|model|key|streaming|temp <valor>\n`));
+    }
+    return true;
+  }
 
-async function showConfig(args, cfg) {
-  const [, subCmd, ...rest] = args;
+  // ── /models ───────────────────────────────
+  if (cmd === '/models') {
+    const spin = createSpinner('Consultando Ollama...');
+    spin.start();
+    try {
+      const models = await orchestrator.client?.listModels() || [];
+      spin.stop();
+      if (!models.length) {
+        console.log(THEME.warning('\n  Nenhum modelo. Use: ollama pull llama3\n'));
+        return true;
+      }
+      const active = cfg.model;
+      console.log('\n' + THEME.primary('  📦 Modelos disponíveis:\n'));
+      for (const m of models) {
+        const size = m.size ? THEME.dim(` (${(m.size / 1e9).toFixed(1)}GB)`) : '';
+        const cur = m.name === active ? THEME.success(' ◀ ativo') : '';
+        console.log(`  ${THEME.accent('▸')} ${THEME.white(m.name)}${size}${cur}`);
+      }
+      console.log(THEME.dim('\n  /config model <nome> para trocar\n'));
+    } catch (e) {
+      spin.stop();
+      console.log(THEME.error(`\n  ✗ ${e.message}\n`));
+    }
+    return true;
+  }
 
-  if (!subCmd || subCmd === 'show') {
-    const current = await configManager.get();
-    const lines = [
-      AI.primary('⚙️  Configuração atual:'),
+  // ── /status ───────────────────────────────
+  if (cmd === '/status') {
+    const spin = createSpinner('Verificando Ollama...');
+    spin.start();
+    const st = await orchestrator.checkOllama();
+    spin.stop();
+    const icon = st.online ? THEME.success('●') : THEME.error('●');
+    console.log(`\n  ${icon} Ollama: ${st.online ? THEME.success('Online') : THEME.error('Offline')}`);
+    if (st.online && st.models?.length) console.log(THEME.dim(`  Modelos: ${st.models.join(', ')}`));
+    if (!st.online) console.log(THEME.dim('  Execute: ollama serve'));
+    const mem = await memoryManager.getSummary();
+    console.log(`\n  ${THEME.dim('Memória:')}  ${mem.sessions} sessões · ${mem.patterns} padrões · ${mem.projects} projetos`);
+    console.log(`  ${THEME.dim('Sessão:')}   ${session.messageCount} msgs · ${session.requests} req · ${session.testsGenerated} testes\n`);
+    return true;
+  }
+
+  // ── /analyze ──────────────────────────────
+  if (cmd === '/analyze') {
+    const folderPath = parts.slice(1).join(' ').replace(/['"]/g, '').trim();
+    if (!folderPath) {
+      console.log(THEME.warning('\n  Informe o caminho: /analyze <pasta>\n'));
+      return true;
+    }
+    const currentCfg = await configManager.get();
+    const analyzer = new CodeAnalyzerAgent(orchestrator.client, orchestrator.bus);
+    try {
+      const result = await analyzer.analyzeFolder(folderPath, currentCfg.model);
+      console.log('');
+
+      const rendered = renderMarkdown(result.content);
+      console.log(THEME.dim('  ╭─ ') + THEME.success('🔭 Analisador de Código'));
+      console.log(THEME.dim('  │'));
+      for (const line of rendered) {
+        console.log(THEME.dim('  │') + ' ' + line.trimStart());
+      }
+      console.log(THEME.dim('  ╰─'));
+      console.log('');
+
+      // Oferta de salvar suite
+      if (result.action === 'save_suite' && result.data?.suite) {
+        const filename = result.data.filename || `suite-${Date.now()}.json`;
+        const { save } = await inquirer.prompt([{
+          type: 'confirm', name: 'save',
+          message: THEME.white(`Salvar suite como "${filename}"?`),
+          prefix: THEME.accent('  ◈'), default: true,
+        }]);
+        if (save) {
+          const fs = await import('fs/promises');
+          await fs.default.writeFile(filename, JSON.stringify(result.data.suite, null, 2), 'utf8');
+          console.log(THEME.success(`\n  ✓ Suite salva: ${filename}`));
+          console.log(THEME.dim(`  Execute com: minicurl → 🧪 API Test Runner → Carregar suite\n`));
+          session.testsGenerated += result.data.suite.tests?.length || 0;
+        }
+      }
+      orchestrator.bus.addAssistantMessage(result.content);
+      session.messageCount++;
+    } catch (err) {
+      console.log(THEME.error(`\n  ✗ Erro na análise: ${err.message}\n`));
+    }
+    return true;
+  }
+
+  // ── /memory ───────────────────────────────
+  if (cmd === '/memory') {
+    const sub = parts[1];
+    if (sub === 'clear') {
+      const { confirm } = await inquirer.prompt([{
+        type: 'confirm', name: 'confirm',
+        message: THEME.white('Limpar toda a memória persistente?'),
+        prefix: THEME.accent('  ◈'), default: false,
+      }]);
+      if (confirm) {
+        await memoryManager.reset();
+        console.log(THEME.success('\n  ✓ Memória apagada.\n'));
+      }
+      return true;
+    }
+    const mem = await memoryManager.getSummary();
+    const m = await memoryManager.get();
+    console.log('\n' + infoBox([
+      THEME.primary('🧠 Memória Persistente:'),
       '',
-      `  ${AI.dim('URL Ollama:')}   ${AI.accent(current.ollamaUrl)}`,
-      `  ${AI.dim('Modelo:')}       ${AI.accent(current.model)}`,
-      `  ${AI.dim('API Key:')}      ${current.apiKey ? AI.muted('***' + current.apiKey.slice(-4)) : AI.muted('(não definida)')}`,
-      `  ${AI.dim('Streaming:')}    ${current.streaming ? AI.success('ativo') : AI.muted('inativo')}`,
-      `  ${AI.dim('Temperatura:')}  ${AI.muted(String(current.temperature))}`,
-      `  ${AI.dim('Max Tokens:')}   ${AI.muted(String(current.maxTokens))}`,
-      `  ${AI.dim('Arquivo:')}      ${AI.muted(configManager.getConfigPath())}`,
-    ];
-    console.log('\n' + boxen(lines.join('\n'), {
-      padding: { top: 0, bottom: 0, left: 1, right: 1 },
-      margin: { left: 2 }, borderStyle: 'round', borderColor: '#A855F7',
-    }) + '\n');
-    return;
+      `  ${THEME.dim('Sessões:')}   ${mem.sessions} sessões salvas`,
+      `  ${THEME.dim('Padrões:')}   ${mem.patterns} APIs aprendidas`,
+      `  ${THEME.dim('Projetos:')}  ${mem.projects} projetos analisados`,
+      `  ${THEME.dim('Total req:')} ${mem.stats.totalRequestsMade}`,
+      `  ${THEME.dim('Testes:')}    ${mem.stats.totalTestsGenerated} suites geradas`,
+      `  ${THEME.dim('Arquivo:')}   ${mem.path}`,
+      `  ${THEME.dim('Atualiz.:')} ${mem.updatedAt ? new Date(mem.updatedAt).toLocaleString('pt-BR') : 'nunca'}`,
+      '',
+      ...(m.sessions.slice(0, 3).map((s, i) =>
+        `  ${THEME.dim((i + 1) + '.')} ${THEME.muted(new Date(s.date).toLocaleDateString('pt-BR'))} ${THEME.dim(s.summary.substring(0, 50))}`
+      )),
+    ]));
+    console.log('');
+    return true;
   }
 
-  const value = rest.join(' ');
-  const keyMap = { url: 'ollamaUrl', model: 'model', key: 'apiKey', streaming: 'streaming', temp: 'temperature' };
-  const configKey = keyMap[subCmd];
-
-  if (!configKey) {
-    console.log(AI.error(`  ✗ Opção desconhecida: ${subCmd}`));
-    console.log(AI.dim('  Use: /config url|model|key|streaming|temp <valor>'));
-    return;
-  }
-
-  let configValue = value;
-  if (subCmd === 'streaming') configValue = value === 'on' || value === 'true';
-  if (subCmd === 'temp') configValue = parseFloat(value) || 0.7;
-
-  await configManager.set({ [configKey]: configValue });
-  console.log(AI.success(`\n  ✓ ${subCmd} → ${configValue}\n`));
-}
-
-async function listModels(client) {
-  const spinner = createAISpinner('Consultando modelos...');
-  spinner.start();
-  try {
-    const models = await client.listModels();
-    spinner.stop();
-    if (models.length === 0) {
-      console.log(AI.warning('\n  Nenhum modelo encontrado. Use: ollama pull llama3\n'));
-      return;
+  // ── /history ──────────────────────────────
+  if (cmd === '/history') {
+    const log = orchestrator.getAgentLog();
+    if (!log.length) { console.log(THEME.muted('\n  Nenhum agente ativado.\n')); return true; }
+    console.log('\n' + THEME.primary('  📋 Agentes na sessão:\n'));
+    for (const e of log) {
+      const time = new Date(e.ts).toLocaleTimeString('pt-BR');
+      console.log(`  ${THEME.dim(time)} ${THEME.accent(e.intent)} ${THEME.muted(e.preview || '')}`);
     }
-    console.log('\n' + AI.primary('  📦 Modelos disponíveis:'));
-    for (const m of models) {
-      const size = m.size ? ` ${AI.muted('(' + Math.round(m.size / 1e9 * 10) / 10 + 'GB)')}` : '';
-      console.log(`  ${AI.accent('▸')} ${AI.white(m.name)}${size}`);
-    }
-    console.log(AI.dim('\n  Use /config model <nome> para trocar\n'));
-  } catch (err) {
-    spinner.stop();
-    console.log(AI.error(`\n  ✗ ${err.message}\n`));
+    console.log('');
+    return true;
   }
-}
 
-async function checkStatus(client) {
-  const spinner = createAISpinner('Verificando Ollama...');
-  spinner.start();
-  const status = await client.checkConnection();
-  spinner.stop();
+  // ── /clear ────────────────────────────────
+  if (cmd === '/clear') {
+    orchestrator.clearSession();
+    console.log(THEME.success('\n  ✓ Histórico da sessão limpo.\n'));
+    return true;
+  }
 
-  if (status.online) {
-    console.log(AI.success('\n  ● Ollama Online'));
-    if (status.models?.length) {
-      console.log(AI.muted(`  Modelos: ${status.models.join(', ')}`));
-    }
-  } else {
-    console.log(AI.error(`\n  ● Ollama Offline: ${status.error}`));
-    console.log(AI.dim('  Execute: ollama serve'));
-  }
-  console.log();
-}
-
-async function showAgentLog() {
-  const log = orchestrator.getAgentLog();
-  if (log.length === 0) {
-    console.log(AI.muted('\n  Nenhum agente ativado ainda.\n'));
-    return;
-  }
-  console.log('\n' + AI.primary('  📋 Agentes ativados nesta sessão:'));
-  for (const entry of log) {
-    const time = new Date(entry.ts).toLocaleTimeString('pt-BR');
-    const badge = AGENT_BADGES[entry.intent] || AI.dim(entry.intent);
-    console.log(`  ${AI.dim(time)} ${badge} ${AI.muted(entry.preview || '')}`);
-  }
-  console.log();
+  return false; // não foi comando especial
 }
 
 // ─────────────────────────────────────────────
-//  EXECUÇÃO DE AÇÃO ESPECIAL (request, suite, etc.)
+//  EXECUTA AÇÃO RETORNADA PELO AGENTE
 // ─────────────────────────────────────────────
-async function handleAction(action, data, COLORS) {
+async function handleAgentAction(action, data, COLORS) {
   if (!action || !data) return;
 
   if (action === 'execute_request' || action === 'execute_fixed_request') {
-    const { confirm } = await inquirer.prompt([
-      {
-        type: 'confirm',
-        name: 'confirm',
-        message: AI.white(`Executar  ${data.method} ${data.url}?`),
-        prefix: AI.accent('  ◈'),
-        default: true,
-      },
-    ]);
-
+    const { confirm } = await inquirer.prompt([{
+      type: 'confirm', name: 'confirm',
+      message: THEME.white(`Executar  ${data.method} ${data.url}?`),
+      prefix: THEME.accent('  ◈'), default: true,
+    }]);
     if (!confirm) return;
 
-    const reqAgent = new RequestAgent(orchestrator.client, orchestrator.bus);
-    const spinner = createAISpinner('Executando requisição...');
-    spinner.start();
-
+    const spin = createSpinner('Executando requisição...');
+    spin.start();
     try {
+      const { RequestAgent } = await import('../ai/agents/requestAgent.js');
+      const reqAgent = new RequestAgent(orchestrator.client, orchestrator.bus);
       const result = await reqAgent.executeRequest({
-        method: data.method,
-        url: data.url,
-        headers: data.headers || {},
-        body: data.body || null,
+        method: data.method, url: data.url,
+        headers: data.headers || {}, body: data.body || null,
       });
-      spinner.stop();
-      await displayResult(result, data.method, data.url, COLORS || AI);
+      spin.stop();
+      session.requests++;
+      await displayResult(result, data.method, data.url, COLORS || THEME);
 
-      // Oferece explicação imediata
-      const { explain } = await inquirer.prompt([
-        {
-          type: 'confirm',
-          name: 'explain',
-          message: AI.white('Quer que a IA explique este resultado?'),
-          prefix: AI.accent('  ◈'),
-          default: false,
-        },
-      ]);
-
+      const { explain } = await inquirer.prompt([{
+        type: 'confirm', name: 'explain',
+        message: THEME.white('A IA explica este resultado?'),
+        prefix: THEME.accent('  ◈'), default: false,
+      }]);
       if (explain) {
-        // Injeta no histórico e dispara explain
-        orchestrator.bus.addUserMessage('Explique este resultado de requisição.');
-        await runChatTurn('Explique este resultado de requisição.', COLORS);
+        orchestrator.bus.addUserMessage('Explique este resultado.');
+        await runChatTurn('Explique este resultado.', COLORS);
       }
     } catch (err) {
-      spinner.stop();
-      console.log(AI.error(`\n  ✗ ${err.message}\n`));
+      spin.stop();
+      console.log(THEME.error(`\n  ✗ ${err.message}\n`));
     }
   }
 
   if (action === 'save_suite' && data.suite && data.filename) {
-    const { confirm } = await inquirer.prompt([
-      {
-        type: 'confirm',
-        name: 'confirm',
-        message: AI.white(`Salvar suite em "${data.filename}"?`),
-        prefix: AI.accent('  ◈'),
-        default: true,
-      },
-    ]);
+    const { confirm } = await inquirer.prompt([{
+      type: 'confirm', name: 'confirm',
+      message: THEME.white(`Salvar suite como "${data.filename}"?`),
+      prefix: THEME.accent('  ◈'), default: true,
+    }]);
     if (confirm) {
       const fs = await import('fs/promises');
       await fs.default.writeFile(data.filename, JSON.stringify(data.suite, null, 2), 'utf8');
-      console.log(AI.success(`\n  ✓ Suite salva: ${data.filename}\n`));
+      console.log(THEME.success(`\n  ✓ Suite salva: ${data.filename}\n`));
+      session.testsGenerated += data.suite.tests?.length || 0;
     }
   }
 }
 
 // ─────────────────────────────────────────────
-//  LOOP DE CHAT — um turno
+//  TURNO DE CHAT PRINCIPAL
 // ─────────────────────────────────────────────
 async function runChatTurn(userMessage, COLORS) {
   const cfg = await configManager.get();
-  let fullContent = '';
+  session.messageCount++;
 
   if (cfg.streaming) {
-    // Streaming: mostra tokens em tempo real
-    printAgentHeader('orchestrator');  // temporário, atualiza depois
-    process.stdout.write(AI.dim('  │ '));
+    // STREAMING — saída token a token ─────────
+    console.log('');
+    console.log(THEME.dim('  ╭─ ') + THEME.primary('🧠 Processando...'));
+    console.log(THEME.dim('  │'));
+    process.stdout.write(THEME.dim('  │ '));
 
-    let headerPrinted = false;
-
-    const response = await orchestrator.chat(userMessage, (token) => {
-      if (!headerPrinted) { headerPrinted = true; }
-      process.stdout.write(AI.ai(token));
-      fullContent += token;
-    });
-
-    printAgentEnd();
-
-    if (response.agentUsed && response.agentUsed !== 'orchestrator') {
-      // Reescreve cabeçalho com agente correto (já impresso, só nota abaixo)
-      console.log(AI.dim(`  · via: ${AGENT_BADGES[response.agentUsed] || response.agentUsed}`));
+    let fullContent = '';
+    let response;
+    try {
+      response = await orchestrator.chat(userMessage, (token) => {
+        process.stdout.write(THEME.agents[response?.agentUsed] ? THEME.agents[response.agentUsed](token) : THEME.primary(token));
+        fullContent += token;
+      });
+    } catch (err) {
+      response = { content: `⚠️ Erro: ${err.message}`, agentUsed: 'error-handler', stats: {} };
+      process.stdout.write(THEME.error(response.content));
+      fullContent = response.content;
     }
-    printStats(response.stats);
 
-    // Lida com ações especiais
-    if (response.action) {
-      await handleAction(response.action, response.data, COLORS);
-    }
+    // Fecha bloco
+    const agentColor = THEME.agents[response?.agentUsed] || THEME.primary;
+    console.log('');
+    console.log(THEME.dim('  │'));
+
+    const statParts = [];
+    if (response?.stats?.responseTokens) statParts.push(`${response.stats.responseTokens} tk`);
+    if (response?.stats?.durationMs) statParts.push(`${response.stats.durationMs}ms`);
+    const agentLabel = {
+      'orchestrator': '🧠 Orquestrador', 'request-agent': '⚡ Req.',
+      'test-agent': '🧪 Testes', 'explain-agent': '📚 Explicador',
+      'debug-agent': '🔍 Debugger', 'code-analyzer': '🔭 Analisador',
+    }[response?.agentUsed] || '🤖 IA';
+    console.log(THEME.dim(`  ╰─ ${agentLabel}`) + (statParts.length ? THEME.dim(` · ${statParts.join(' · ')}`) : ''));
+    console.log('');
+
+    if (response?.action) await handleAgentAction(response.action, response.data, COLORS);
+
   } else {
-    // Sem streaming: spinner enquanto espera
-    const spinner = createAISpinner('Processando...');
-    spinner.start();
-    const response = await orchestrator.chat(userMessage, null);
-    spinner.stop();
-
-    printAgentHeader(response.agentUsed || 'orchestrator');
-    // Imprime o conteúdo linha a linha
-    const lines = response.content.split('\n');
-    for (const line of lines) {
-      console.log(AI.dim('  │ ') + AI.ai(line));
+    // SEM STREAMING — spinner ──────────────────
+    const spin = createSpinner('Processando...');
+    spin.start();
+    let response;
+    try {
+      response = await orchestrator.chat(userMessage, null);
+    } catch (err) {
+      response = { content: `⚠️ Erro: ${err.message}`, agentUsed: 'error-handler', stats: {} };
     }
-    printAgentEnd();
-    printStats(response.stats);
+    spin.stop();
 
-    if (response.action) {
-      await handleAction(response.action, response.data, COLORS);
+    // Renderiza a resposta com markdown
+    const rendered = renderMarkdown(response.content);
+    const agentLabel = {
+      'orchestrator': '🧠 Orquestrador', 'request-agent': '⚡ Agente de Requisições',
+      'test-agent': '🧪 Agente de Testes', 'explain-agent': '📚 Agente Explicador',
+      'debug-agent': '🔍 Agente Debugger', 'code-analyzer': '🔭 Analisador de Código',
+    }[response?.agentUsed] || '🤖 IA';
+
+    const agentColor = THEME.agents[response?.agentUsed] || THEME.primary;
+    console.log('');
+    console.log(THEME.dim('  ╭─ ') + agentColor(agentLabel));
+    console.log(THEME.dim('  │'));
+    for (const line of rendered) {
+      if (line.trim() === '') {
+        console.log(THEME.dim('  │'));
+      } else {
+        console.log(THEME.dim('  │') + ' ' + line.trimStart());
+      }
     }
+    console.log(THEME.dim('  │'));
+    const statParts = [];
+    if (response?.stats?.responseTokens) statParts.push(`${response.stats.responseTokens} tokens`);
+    if (response?.stats?.durationMs) statParts.push(`${response.stats.durationMs}ms`);
+    console.log(THEME.dim(`  ╰─` + (statParts.length ? ` · ${statParts.join(' · ')}` : '')));
+    console.log('');
+
+    if (response?.action) await handleAgentAction(response.action, response.data, COLORS);
   }
 }
 
 // ─────────────────────────────────────────────
-//  LANÇA O CHAT — ENTRY POINT
+//  SPLASH CLINE-STYLE
+// ─────────────────────────────────────────────
+async function showSplash(cfg, ollamaStatus) {
+  console.clear();
+  const w = termWidth();
+
+  // Animação de boot
+  const bootLines = [
+    [THEME.dim('  [ MEM ]'), THEME.primary(' Carregando memória de sessões...')],
+    [THEME.dim('  [ AGT ]'), THEME.primary(' Inicializando agentes (5 ativos)...')],
+    [THEME.dim('  [ LLM ]'), THEME.primary(` Conectando ao Ollama · ${cfg.model}...`)],
+    [THEME.dim('  [ NET ]'), THEME.primary(` ${cfg.ollamaUrl}...`)],
+  ];
+
+  for (const [prefix, text] of bootLines) {
+    process.stdout.write(prefix + text);
+    await sleep(90);
+    const status = bootLines[bootLines.indexOf([prefix, text])] !== undefined
+      ? (ollamaStatus.online ? THEME.success('  ✓') : THEME.warning('  ⚠'))
+      : THEME.success('  ✓');
+    console.log(THEME.success('  ✓'));
+    await sleep(50);
+  }
+
+  await sleep(150);
+  console.clear();
+
+  // Header centralizado
+  printAIHeader(cfg.model, cfg.ollamaUrl);
+
+  // Status box
+  const memSummary = await memoryManager.getSummary();
+  const statusLines = [];
+
+  if (ollamaStatus.online) {
+    statusLines.push(THEME.success('  ● Ollama Online') + THEME.dim(` · ${ollamaStatus.models?.length || 0} modelo(s)`));
+  } else {
+    statusLines.push(THEME.error('  ● Ollama Offline') + THEME.warning(' — Execute: ollama serve'));
+  }
+
+  statusLines.push(THEME.dim(`  🧠 Memória: ${memSummary.sessions} sessões · ${memSummary.patterns} APIs aprendidas · ${memSummary.projects} projetos`));
+  statusLines.push('');
+  statusLines.push(THEME.dim('  Agentes: ') +
+    THEME.primary('🧠 Orq') + THEME.dim(' · ') +
+    THEME.accent('⚡ Req') + THEME.dim(' · ') +
+    THEME.warning('🧪 Test') + THEME.dim(' · ') +
+    THEME.secondary('📚 Explain') + THEME.dim(' · ') +
+    THEME.error('🔍 Debug') + THEME.dim(' · ') +
+    THEME.success('🔭 Analyze')
+  );
+  statusLines.push('');
+  statusLines.push(THEME.dim('  Comandos: ') + THEME.primary('/help') + THEME.dim(' · ') +
+    THEME.primary('/config') + THEME.dim(' · ') + THEME.primary('/analyze <pasta>') + THEME.dim(' · ') +
+    THEME.primary('/memory') + THEME.dim(' · ') + THEME.primary('/sair'));
+
+  console.log(infoBox(statusLines, { width: Math.min(w - 4, 78) }));
+  console.log('');
+
+  if (!ollamaStatus.online) {
+    console.log(center(THEME.warning('⚠️  Ollama offline — modo limitado. Execute: ollama serve'), w));
+    console.log('');
+  }
+}
+
+// ─────────────────────────────────────────────
+//  ENTRY POINT
 // ─────────────────────────────────────────────
 export async function launchAIChat(COLORS) {
-  // Init e verificação do Ollama
+  // Init
   await orchestrator.init();
   const cfg = await configManager.get();
-  const ollamaStatus = await orchestrator.checkOllama();
+  const [ollamaStatus, memSummary] = await Promise.all([
+    orchestrator.checkOllama(),
+    memoryManager.getSummary(),
+  ]);
 
-  await showAISplash(cfg, ollamaStatus);
+  await showSplash(cfg, ollamaStatus);
 
+  const sessionStartTime = Date.now();
   let running = true;
 
   while (running) {
     try {
-      printSeparator();
+      const w = termWidth();
 
-      const { userInput } = await inquirer.prompt([
-        {
-          type: 'input',
-          name: 'userInput',
-          message: '',
-          prefix: AI.user('  Você ›'),
-        },
-      ]);
+      // Status bar antes do input
+      const msgs = orchestrator.bus.getHistory().length;
+      const sessionTime = Math.round((Date.now() - sessionStartTime) / 1000);
+      const timeStr = sessionTime < 60 ? `${sessionTime}s` : `${Math.floor(sessionTime / 60)}m`;
+      printStatusBar(cfg.model, {
+        messages: msgs,
+        memory: `${memSummary.sessions}s`,
+      });
+
+      // Input
+      const { userInput } = await inquirer.prompt([{
+        type: 'input',
+        name: 'userInput',
+        message: '',
+        prefix: THEME.user('  ›'),
+      }]);
 
       const input = userInput.trim();
       if (!input) continue;
 
       // Comandos especiais
       if (input.startsWith('/')) {
-        const parts = input.split(' ');
-        const cmd = parts[0].toLowerCase();
-
-        if (cmd === '/sair' || cmd === '/exit') {
+        const isExit = input.toLowerCase() === '/sair' || input.toLowerCase() === '/exit';
+        if (isExit) {
           running = false;
-          console.log(AI.primary('\n  ← Voltando ao menu...\n'));
           break;
         }
-
-        if (cmd === '/help') { await showChatHelp(); continue; }
-        if (cmd === '/clear') { await clearSession(); continue; }
-        if (cmd === '/config') { await showConfig(parts, cfg); continue; }
-        if (cmd === '/models') { await listModels(orchestrator.client); continue; }
-        if (cmd === '/status') { await checkStatus(orchestrator.client); continue; }
-        if (cmd === '/history') { await showAgentLog(); continue; }
-
-        console.log(AI.warning(`  ⚠ Comando desconhecido: ${cmd}. Use /help para ver todos.\n`));
+        const handled = await handleSpecialCommand(input, cfg);
+        if (!handled) {
+          console.log(THEME.warning(`  ⚠ Comando desconhecido. Use /help\n`));
+        }
         continue;
       }
 
-      // Mensagem normal — envia para o orquestrador
+      // Mensagem normal
       printUserMessage(input);
 
       try {
         await runChatTurn(input, COLORS);
       } catch (err) {
-        console.log(AI.error(`\n  ✗ ${err.message}`));
-        if (err.message.includes('Ollama')) {
-          console.log(AI.dim('  Execute: ollama serve\n'));
+        console.log(THEME.error(`\n  ✗ ${err.message}`));
+        if (err.message.includes('Ollama') || err.message.includes('ECONNREFUSED')) {
+          console.log(THEME.dim('  Execute: ollama serve\n'));
         }
       }
 
@@ -501,8 +524,22 @@ export async function launchAIChat(COLORS) {
       if (err.name === 'ExitPromptError') {
         running = false;
       } else {
-        console.log(AI.error(`\n  ✗ Erro: ${err.message}\n`));
+        console.log(THEME.error(`  ✗ ${err.message}`));
       }
     }
   }
+
+  // Salva sessão na memória ao sair
+  try {
+    const messages = orchestrator.bus.getHistory();
+    if (messages.length > 0) {
+      await memoryManager.saveSession(messages, {
+        requests: session.requests,
+        testsGenerated: session.testsGenerated,
+        duration: Date.now() - session.startTime,
+      });
+    }
+  } catch { /* silencioso */ }
+
+  console.log('\n' + center(THEME.primary('← Voltando ao menu...'), termWidth()) + '\n');
 }

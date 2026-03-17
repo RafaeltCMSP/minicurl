@@ -1,16 +1,17 @@
 /**
  * MinicUrl AI — Módulo CLI
  * Trata: minicurl ai [prompt]
- *         minicurl ai config [--url] [--model] [--key] [--show] [--reset]
- *         minicurl ai analyze <url>
- *         minicurl ai models
- *         minicurl ai status
+ *         minicurl ai config [flags]
+ *         minicurl ai analyze <url>            — Analisa uma URL com IA
+ *         minicurl ai analyze-code <pasta>     — Escaneia pasta por chamadas de API
+ *         minicurl ai models | status | memory
  */
 
 import chalk from 'chalk';
 import { configManager } from './config.js';
 import { OllamaClient } from './ollamaClient.js';
 import { orchestrator } from './agents/orchestrator.js';
+import { memoryManager } from './memory.js';
 
 const C = {
   primary: chalk.hex('#A855F7'),
@@ -44,9 +45,21 @@ export async function runAICLI(args) {
     return;
   }
 
-  // ─── minicurl ai analyze <url> ────────────────
+  // ─── minicurl ai analyze <url> ───────────────
   if (subCmd === 'analyze') {
     await handleAnalyze(args.slice(1));
+    return;
+  }
+
+  // ─── minicurl ai analyze-code <pasta> ────────
+  if (subCmd === 'analyze-code') {
+    await handleAnalyzeCode(args.slice(1));
+    return;
+  }
+
+  // ─── minicurl ai memory ───────────────────────
+  if (subCmd === 'memory') {
+    await handleMemory(args.slice(1));
     return;
   }
 
@@ -172,7 +185,61 @@ async function handleStatus() {
   console.log();
   console.log(C.dim(`  Modelo ativo: ${cfg.model}`));
   console.log(C.dim(`  Streaming: ${cfg.streaming ? 'ativo' : 'inativo'}`));
-  console.log(C.dim(`  Config: ${configManager.getConfigPath()}\n`));
+  console.log(C.dim(`  Config: ${configManager.getConfigPath()}`));
+  const mem = await memoryManager.getSummary();
+  console.log(C.dim(`  Memória: ${mem.sessions} sessões · ${mem.patterns} APIs · ${mem.projects} projetos\n`));
+}
+
+async function handleAnalyzeCode(args) {
+  const folderPath = args.join(' ').replace(/['"/]/g, '').trim();
+  if (!folderPath) {
+    console.log(C.error('  ✗ Informe uma pasta: minicurl ai analyze-code ./src'));
+    console.log(C.dim('  Exemplo: minicurl ai analyze-code D:\\MeuProjeto'));
+    return;
+  }
+
+  const cfg = await configManager.get();
+  const client = new OllamaClient(cfg.ollamaUrl, cfg.apiKey);
+  const { CodeAnalyzerAgent } = await import('./agents/codeAnalyzerAgent.js');
+  const analyzer = new CodeAnalyzerAgent(client, null);
+
+  try {
+    const result = await analyzer.analyzeFolder(folderPath, cfg.model);
+    console.log();
+    const lines = result.content.split('\n');
+    for (const line of lines) {
+      console.log('  ' + C.ai(line));
+    }
+
+    if (result.action === 'save_suite' && result.data?.suite) {
+      const fs = await import('fs/promises');
+      const fname = result.data.filename || `test-suite.json`;
+      await fs.default.writeFile(fname, JSON.stringify(result.data.suite, null, 2), 'utf8');
+      console.log(C.success(`\n  ✓ Suite salva: ${fname}\n`));
+    }
+  } catch (err) {
+    console.log(C.error(`\n  ✗ ${err.message}\n`));
+    process.exit(1);
+  }
+}
+
+async function handleMemory(args) {
+  const sub = args[0];
+  if (sub === 'clear') {
+    await memoryManager.reset();
+    console.log(C.success('  ✓ Memória resetada.'));
+    return;
+  }
+  const mem = await memoryManager.getSummary();
+  console.log(C.primary('\n  🧠 MinicUrl AI — Memória Persistente:\n'));
+  console.log(C.dim(`  Arquivo:      ${mem.path}`));
+  console.log(C.dim(`  Atualizado:   ${mem.updatedAt ? new Date(mem.updatedAt).toLocaleString('pt-BR') : 'nunca'}`));
+  console.log(C.dim(`  Sessões:      ${mem.sessions}  (${mem.stats.totalMessages} mensagens total)`));
+  console.log(C.dim(`  APIs aprendidas: ${mem.patterns}`));
+  console.log(C.dim(`  Projetos analisados: ${mem.projects}`));
+  console.log(C.dim(`  Requisições feitas: ${mem.stats.totalRequestsMade}`));
+  console.log(C.dim(`  Testes gerados: ${mem.stats.totalTestsGenerated}\n`));
+  console.log(C.dim('  Use: minicurl ai memory clear   para resetar\n'));
 }
 
 async function handleAnalyze(args) {
@@ -325,27 +392,25 @@ ${C.warning('  CHAT INTERATIVO (TUI):')}
   ${C.accent('minicurl')}                    ${C.dim('→ Menu principal → 🤖 AI Assistant')}
 
 ${C.warning('  CLI DIRETO:')}
-  ${C.accent('minicurl ai')} ${C.primary('<prompt>')}         ${C.dim('— Pergunta única (não-interativo)')}
-  ${C.accent('minicurl ai analyze')} ${C.primary('<url>')}    ${C.dim('— Analisa uma URL com IA')}
-  ${C.accent('minicurl ai models')}           ${C.dim('— Lista modelos Ollama instalados')}
-  ${C.accent('minicurl ai status')}           ${C.dim('— Verifica conexão com Ollama')}
+  ${C.accent('minicurl ai')} ${C.primary('<prompt>')}               ${C.dim('— Pergunta única (não-interativo)')}
+  ${C.accent('minicurl ai analyze')} ${C.primary('<url>')}          ${C.dim('— Analisa URL com IA')}
+  ${C.accent('minicurl ai analyze-code')} ${C.primary('<pasta>')}   ${C.dim('— Escaneia pasta por chamadas de API')}
+  ${C.accent('minicurl ai models')}                 ${C.dim('— Lista modelos Ollama instalados')}
+  ${C.accent('minicurl ai status')}                 ${C.dim('— Verifica Ollama e memória')}
+  ${C.accent('minicurl ai memory')}                 ${C.dim('— Ver memória de sessões')}
+  ${C.accent('minicurl ai memory clear')}           ${C.dim('— Resetar memória')}
 
 ${C.warning('  CONFIGURAÇÃO:')}
-  ${C.accent('minicurl ai config')}           ${C.dim('— Ver configuração atual')}
-  ${C.accent('minicurl ai config')} ${C.primary('--url')} ${C.dim('<url>')}   ${C.dim('— URL do Ollama')}
-  ${C.accent('minicurl ai config')} ${C.primary('--model')} ${C.dim('<m>')}  ${C.dim('— Modelo (ex: llama3, mistral)')}
-  ${C.accent('minicurl ai config')} ${C.primary('--key')} ${C.dim('<k>')}    ${C.dim('— API Key (opcional)')}
-  ${C.accent('minicurl ai config')} ${C.primary('--streaming')} ${C.dim('on')} ${C.dim('— Ativa streaming de tokens')}
-  ${C.accent('minicurl ai config')} ${C.primary('--reset')}       ${C.dim('— Reseta para defaults')}
+  ${C.accent('minicurl ai config')}            ${C.dim('— Ver configuração atual')}
+  ${C.accent('minicurl ai config')} ${C.primary('--url')} ${C.dim('<url>')}  ${C.dim('— URL do Ollama')}
+  ${C.accent('minicurl ai config')} ${C.primary('--model')} ${C.dim('<m>')} ${C.dim('— Modelo (ex: llama3, mistral)')}
+  ${C.accent('minicurl ai config')} ${C.primary('--key')} ${C.dim('<k>')}   ${C.dim('— API Key (opcional)')}
+  ${C.accent('minicurl ai config')} ${C.primary('--reset')}          ${C.dim('— Reseta para defaults')}
 
 ${C.warning('  EXEMPLOS:')}
-  ${C.dim('# Chat sobre HTTP')}
   ${C.accent('minicurl ai')} "Como fazer um POST com Bearer token?"
-
-  ${C.dim('# Analisar API')}
   ${C.accent('minicurl ai analyze')} https://api.github.com/users/octocat
-
-  ${C.dim('# Configurar Ollama')}
+  ${C.accent('minicurl ai analyze-code')} ./src
   ${C.accent('minicurl ai config')} --url http://localhost:11434 --model llama3
 
 ${C.warning('  AGENTES DISPONÍVEIS:')}
@@ -354,5 +419,6 @@ ${C.warning('  AGENTES DISPONÍVEIS:')}
   ${C.warning('🧪')} ${C.white('Testes')}         — Cria suites de teste para APIs
   ${C.dim('📚')} ${C.white('Explicador')}     — Documenta e explica respostas HTTP
   ${C.error('🔍')} ${C.white('Debugger')}       — Diagnostica erros e sugere correções
+  ${C.success('🔭')} ${C.white('Analisador')}    — Escaneia projetos e gera testes de API
 `);
 }
